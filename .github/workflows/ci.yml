@@ -1,0 +1,174 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13"]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        version: "latest"
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      run: uv python install ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: uv sync --all-extras --dev
+    
+    - name: Check code formatting with black
+      run: uv run black --check --diff .
+    
+    - name: Run type checking with mypy
+      run: uv run mypy wired_ffi
+    
+    - name: Run tests with pytest
+      run: uv run pytest -v --tb=short
+    
+    - name: Test CLI commands
+      run: |
+        # Test basic CLI functionality
+        uv run wired-ffi --help
+        uv run wired-ffi info
+        
+        # Create test data
+        echo '{"test": "data", "number": 42}' > test_input.json
+        
+        # Test serialization
+        uv run wired-ffi serialize --format json test_input.json test_output.json
+        uv run wired-ffi serialize --format pickle test_input.json test_output.pkl
+        
+        # Test deserialization
+        uv run wired-ffi deserialize --format pickle test_output.pkl test_restored.json
+        
+        # Test FFI call
+        echo '{"function_name": "test_func", "args": [1, 2], "kwargs": {"key": "value"}}' > test_request.json
+        uv run wired-ffi call test_request.json test_response.json
+        
+        # Verify output files exist
+        ls -la test_*.json test_*.pkl
+    
+    - name: Test package build
+      run: uv build
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist-python-${{ matrix.python-version }}
+        path: dist/
+        retention-days: 7
+
+  lint:
+    name: Lint and Security Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        version: "latest"
+    
+    - name: Set up Python
+      run: uv python install 3.13
+    
+    - name: Install dependencies
+      run: uv sync --dev
+    
+    - name: Run ruff linting
+      run: |
+        uv add --dev ruff
+        uv run ruff check .
+    
+    - name: Run bandit security linting
+      run: |
+        uv add --dev bandit
+        uv run bandit -r wired_ffi/ -f json -o bandit-report.json || true
+        uv run bandit -r wired_ffi/
+    
+    - name: Upload security report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-report
+        path: bandit-report.json
+        retention-days: 30
+
+  docs:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Check README format
+      run: |
+        # Check if README exists and has basic content
+        test -f README.md
+        grep -q "wired-ffi" README.md
+        grep -q "installation" README.md || grep -q "安装" README.md
+        grep -q "usage" README.md || grep -q "使用" README.md
+    
+    - name: Validate pyproject.toml
+      run: |
+        python -c "import tomllib; tomllib.load(open('pyproject.toml', 'rb'))"
+
+  multi-platform:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        version: "latest"
+    
+    - name: Set up Python
+      run: uv python install 3.13
+    
+    - name: Install dependencies
+      run: uv sync
+    
+    - name: Test basic functionality
+      shell: bash
+      run: |
+        # Test basic CLI functionality across platforms
+        uv run wired-ffi --version
+        uv run wired-ffi info
+        
+        # Create and test with sample data
+        echo '{"platform": "${{ matrix.os }}", "test": true}' > platform_test.json
+        uv run wired-ffi serialize --format json platform_test.json platform_output.json
+        uv run wired-ffi deserialize --format json platform_output.json platform_restored.json
+        
+        # Verify content
+        cat platform_restored.json
